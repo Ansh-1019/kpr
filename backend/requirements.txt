@@ -12,3 +12,4 @@ pytesseract
 pdfplumber
 exifread
 numpy
+playwright

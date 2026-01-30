@@ -9,7 +9,9 @@ from fastapi import HTTPException
 from PIL import Image
 import io
 import re
+import asyncio
 from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright
 
 # Load environment variables from .env file
 load_dotenv()
@@ -135,101 +137,177 @@ async def analyze_image_with_gemini(file_content: bytes):
     except Exception as e:
         print(f"[ERROR] Exception in Gemini analysis: {e}")
         error_msg = str(e)
-        if "429" in error_msg or "ResourceExhausted" in error_msg:
+        if "429" in error_msg or "ResourceExhausted" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
              return '{"error": true, "title": "Service Currently Busy", "message": "Our advanced forensic analysis service is currently experiencing unusually high demand.\\n\\nPlease rest assured that your submission was processed securely and has not been stored or retained.\\n\\nWe recommend waiting a brief moment before attempting your verification again."}'
         
         return f'{{"error": true, "title": "Analysis Failed", "message": "{error_msg.replace('"', "'")}"}}'
 
 
 
+def _scrape_with_playwright(url):
+    """
+    Synchronous helper to scrape with Playwright.
+    Must be run in a thread to avoid blocking the async event loop.
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            # Mimic real user agent
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            page = context.new_page()
+            response = page.goto(url, timeout=30000)
+            status_code = response.status
+            print(f"[DEBUG] Playwright Status: {status_code}")
+            
+            if status_code == 200:
+                # Wait a bit for dynamic content
+                try:
+                    page.wait_for_timeout(2000)
+                except:
+                    pass
+                
+                content = page.content()
+                soup = BeautifulSoup(content, 'html.parser')
+                text = soup.get_text(separator=' ', strip=True)[:3000]
+                return text
+            else:
+                 return f"Could not retrieve page content. Status: {status_code}"
+        finally:
+            browser.close()
+
 async def verify_certificate(url: str):
     """
-    Verifies a certificate URL from Udemy or Coursera.
+    Verifies a certificate URL using AI analysis + Rule Engine.
     """
     try:
+        # 1. Regex / Format Check
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.google.com/',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'cross-site',
-            'Sec-Fetch-User': '?1'
         }
+        
+        provider = "Unknown"
+        url_valid = False
         
         if "udemy.com" in url:
             provider = "Udemy"
-            # Strict Regex for Udemy: https://www.udemy.com/certificate/UC-xxxx/
-            # Example: UC-011aea85-6526-4e68-ade5-02763e2f10a1
             udemy_pattern = r"udemy\.com/certificate/UC-[a-zA-Z0-9-]+"
-            if not re.search(udemy_pattern, url):
-                 return {"valid": False, "provider": provider, "details": "Invalid URL format. Expected 'udemy.com/certificate/UC-...'"}
-
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                page_title = soup.title.string if soup.title else ""
-                
-                # Check for "Certificate of Completion"
-                is_valid = "Certificate" in page_title or "Udemy" in response.text
-                
-                return {
-                    "valid": is_valid,
-                    "provider": provider,
-                    "details": page_title.strip() if page_title else "Certificate found"
-                }
-            elif response.status_code == 403:
-                # Fallback: Regex passed, so format is valid.
-                return {
-                    "valid": True,
-                    "provider": provider,
-                    "details": "Certificate ID format is valid. (Deep verification blocked by provider)"
-                }
-            else:
-                 return {"valid": False, "provider": provider, "details": f"URL verification failed (Status {response.status_code})"}
-
+            if re.search(udemy_pattern, url):
+                url_valid = True
         elif "coursera.org" in url:
             provider = "Coursera"
-            # Coursera verify URLs: https://www.coursera.org/account/accomplishments/verify/XXXX
-            # Also sometimes: https://www.coursera.org/account/accomplishments/certificate/XXXX
-            if "verify" not in url and "certificate" not in url:
-                return {"valid": False, "provider": provider, "details": "Invalid Coursera certificate URL format"}
-            
             coursera_pattern = r"coursera\.org/account/accomplishments/(verify|certificate)/[a-zA-Z0-9]+"
-            if not re.search(coursera_pattern, url):
-                 return {"valid": False, "provider": provider, "details": "Invalid URL format. Expected 'coursera.org/account/accomplishments/...'"}
-            
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                 soup = BeautifulSoup(response.text, 'html.parser')
-                 page_title = soup.title.string if soup.title else ""
-                 
-                 is_valid = "Coursera" in page_title
-                 return {
-                    "valid": is_valid,
-                    "provider": provider,
-                    "details": page_title.strip() if page_title else "Certificate found"
-                }
-            elif response.status_code == 403:
-                 return {
-                    "valid": True,
-                    "provider": provider,
-                    "details": "Certificate ID format is valid. (Deep verification blocked by provider)"
-                }
-            else:
-                 return {"valid": False, "provider": provider, "details": "URL verification failed"}
-        else:
-             return {
-                "valid": False,
-                "provider": "Unknown",
-                "details": "Only Udemy and Coursera are supported currently"
-            }
+            if re.search(coursera_pattern, url):
+                 url_valid = True
+
+        if not url_valid:
+             return {"valid": False, "provider": provider, "details": "Invalid URL format or unsupported provider."}
+
+        # 2. Text Extraction (Scraping)
+        scraped_text = ""
+        try:
+             print(f"[DEBUG] Launching Playwright (Sync) for {url}...")
+             # Run synchronous playwright in a separate thread
+             scraped_text = await asyncio.to_thread(_scrape_with_playwright, url)
+                    
+        except Exception as scrap_err:
+             print(f"[ERROR] Scraping failed: {scrap_err}")
+             scraped_text = f"Scraping failed: {str(scrap_err)}"
+
+        # 3. AI Forensic Analysis
+        prompt = f"""
+        Analyze the provided certificate text strictly as a verification assistant.
+        
+        Certificate Text Context:
+        {scraped_text}
+        
+        Focus on the following observable aspects:
+
+        1. Platform-Specific Structure
+           - Presence of known {provider} branding concepts
+           - Typical terminology used by the platform ("Certificate of Completion", etc.)
+
+        2. Certificate Identifiers
+           - Presence of certificate ID or verification code in the text
+           - Format consistency
+
+        3. Content Consistency
+           - Logical consistency between Name, Course, and Issuer
+           
+        4. Visual & Formatting Quality (Inferred from text structure)
+           - Coherence of extracted text info
+
+        5. Verification Limitations
+           - Whether authenticity can be reasonably assessed from text only
+
+        IMPORTANT RULES:
+        - Do NOT declare the certificate as authentic or fake.
+        - Do NOT assign numeric confidence scores.
+        - Do NOT imply legal or official verification.
+        - Use neutral, descriptive language only.
+
+        OUTPUT FORMAT (STRICT):
+        Return your analysis using the following structure:
+
+        Platform Identification:
+        - Detected platform ({provider} based on text analysis).
+
+        Observations:
+        - Bullet points describing notable structural or textual characteristics.
+
+        Potential Concerns:
+        - Aspects that may require further verification or raise uncertainty.
+
+        Verification Indicators:
+        - Features that are commonly expected in genuine certificates.
+
+        Uncertainty & Limitations:
+        - Reasons why a definitive conclusion cannot be made.
+
+        Explanation Summary:
+        - A short, neutral explanation suitable for end users.
+        """
+        
+        print("[DEBUG] Sending Certificate Analysis to Gemini...")
+        
+        # We use generate_content with TEXT (not image)
+        ai_response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt
+        )
+        
+        forensic_report = ai_response.text.strip() if ai_response.text else "AI Analysis failed to generate report."
+
+        # 4. Decision Engine Verdict
+        from app.services.decision_engine import make_decision
+        
+        analysis_data = {
+            "url_valid": url_valid,
+            "provider": provider,
+            "forensic_report": forensic_report
+        }
+        
+        decision = make_decision("certificate", analysis_data)
+        
+        # Map to Frontend format
+        return {
+            "valid": decision['status'] == 'VERIFIED',
+            "provider": provider,
+            "details": forensic_report # We show the full report as details
+        }
 
     except Exception as e:
+        print(f"[ERROR] Cert Verify Failed: {e}")
+        error_msg = str(e)
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+             return {
+                "valid": False,
+                "provider": "System Busy",
+                "details": "High traffic volume. Please try again in 1 minute."
+             }
         return {
             "valid": False, 
             "provider": "Error", 
-            "details": str(e)
+            "details": f"Verification failed: {error_msg}"
         }

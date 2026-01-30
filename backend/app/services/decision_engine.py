@@ -6,6 +6,43 @@ def make_decision(media_type: str, analysis: dict):
     score = 0
     reasons = []
 
+    # -------- CERTIFICATE LOGIC (New) --------
+    if media_type == "certificate":
+        # 1. Base Validation (Regex/URL check from bot_service)
+        if analysis.get("url_valid"):
+            score += 40
+            reasons.append("Valid Platform URL Pattern")
+        
+        # 2. Provider Check
+        provider = analysis.get("provider", "Unknown")
+        if provider in ["Udemy", "Coursera"]:
+             score += 10
+             reasons.append(f"Recognized Provider: {provider}")
+
+        # 3. Forensic Text Analysis
+        forensic_report = analysis.get("forensic_report", "")
+        if forensic_report:
+            # Positive Indicators in the report
+            positive_terms = ["typical layout", "expected phrases", "format consistency", 
+                            "certificate id present", "branding present", "logical consistency"]
+            
+            for term in positive_terms:
+                 if term.lower() in forensic_report.lower():
+                      score += 5
+
+            # Negative Indicators (Concerns)
+            negative_terms = ["spelling anomaly", "mismatched styles", "manual editing", 
+                            "inconsistent font", "layout incoherence"]
+            
+            concerns = []
+            for term in negative_terms:
+                 if term.lower() in forensic_report.lower():
+                      score -= 15
+                      concerns.append(term)
+            
+            if concerns:
+                 reasons.append(f"Visual anomalies detected: {', '.join(concerns)}")
+
     # -------- IMAGE / PDF LOGIC --------
     if media_type in ["image", "pdf"]:
         # 1. Forensic Text Analysis (New Logic)
