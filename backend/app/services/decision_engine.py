@@ -8,6 +8,29 @@ def make_decision(media_type: str, analysis: dict):
 
     # -------- IMAGE / PDF LOGIC --------
     if media_type in ["image", "pdf"]:
+        # 1. Forensic Text Analysis (New Logic)
+        forensic_report = analysis.get("forensic_report", "")
+        if forensic_report:
+            # Heuristic: Scan for negative indicators in the report
+            # The LLM is neutral, but if it mentions these terms, it's a signal.
+            indicators = [
+                "over-smoothing", "plastic-like", "inconsistent sharpness",
+                "warped edges", "unnatural transitions", "asymmetric shapes",
+                "mismatched light", "inconsistent reflections", "implausible details",
+                "checkerboard", "grid-like artifacts", "repeating micro-patterns", 
+                "abrupt texture boundaries", "inconsistent proportions"
+            ]
+            
+            detected_indicators = []
+            for indicator in indicators:
+                if indicator.lower() in forensic_report.lower():
+                    score += 15 # Each indicator adds to the AI score
+                    detected_indicators.append(indicator)
+            
+            if detected_indicators:
+                 reasons.append(f"Forensic anomalies detected ({len(detected_indicators)})")
+
+        # 2. Existing Metadata Logic
         if analysis.get("qr_detected"):
             score += 40
             reasons.append("QR code detected")

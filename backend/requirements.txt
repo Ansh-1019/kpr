@@ -2,3 +2,13 @@ fastapi
 uvicorn
 python-multipart
 filetype
+google-genai
+requests
+beautifulsoup4
+python-dotenv
+Pillow
+opencv-python
+pytesseract
+pdfplumber
+exifread
+numpy
